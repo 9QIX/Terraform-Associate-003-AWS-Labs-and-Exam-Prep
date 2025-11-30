@@ -31,7 +31,7 @@ def move_image_to_images_folder(image_path, markdown_dir):
     new_image_path = os.path.join(images_dir, image_filename)
 
     # Move the file if it's not already in the Images directory
-    if os.path.normpath(image_path) != os.path.normpath(new_image_path):
+    if os.path.abspath(image_path) != os.path.abspath(new_image_path):
         try:
             shutil.move(image_path, new_image_path)
             print(f"{GREEN}✔ Moved image: {image_path} → {new_image_path}{RESET}")
@@ -60,15 +60,15 @@ def modify_image_paths_in_markdown(file_path):
         alt_text, old_image_path = match.groups()
 
         # Convert to proper path relative to markdown file
-        if not old_image_path.startswith('./Images/'):
+        if not old_image_path.startswith('./Images/') and not old_image_path.startswith('Images/'):
             # Handle absolute and relative paths
-            full_image_path = os.path.join(markdown_dir, os.path.normpath(old_image_path))
+            full_image_path = os.path.join(markdown_dir, old_image_path.replace('\\', '/'))
 
             # Move the image file if it exists
             new_image_path = move_image_to_images_folder(full_image_path, markdown_dir)
             if new_image_path:
                 # Convert to relative path with forward slashes
-                relative_path = './Images/' + os.path.basename(new_image_path)
+                relative_path = './Images/' + os.path.basename(new_image_path).replace('\\', '/')
                 changes_made = True
                 print(f"{GREEN}✔ Updated path in markdown: {old_image_path} → {relative_path}{RESET}")
                 return f'![{alt_text}]({relative_path})'
