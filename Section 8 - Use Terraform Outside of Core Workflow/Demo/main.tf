@@ -7,17 +7,17 @@ Contributors: Bryan and Gabe
 # Configure the AWS Provider
 provider "aws" {
   region = "us-east-1"
+  default_tags {
+    tags = {
+      "Provisioned" = "Terraform"
+      "Terraform"   = "true"
+    }
+  }
 }
 
 #Retrieve the list of AZs in the current AWS region
 data "aws_availability_zones" "available" {}
 data "aws_region" "current" {}
-
-locals {
-  team        = "api_mgmt_dev"
-  application = "corp_api"
-  server_name = "ec2-${var.environment}-api-${var.variable_sub_az}"
-}
 
 #Define the VPC 
 resource "aws_vpc" "vpc" {
@@ -27,7 +27,6 @@ resource "aws_vpc" "vpc" {
     Name        = var.vpc_name
     Environment = "demo_environment"
     Terraform   = "true"
-    Region      = data.aws_region.current.name
   }
 }
 
@@ -112,6 +111,7 @@ resource "aws_internet_gateway" "internet_gateway" {
 
 #Create EIP for NAT Gateway
 resource "aws_eip" "nat_gateway_eip" {
+  vpc        = true
   depends_on = [aws_internet_gateway.internet_gateway]
   tags = {
     Name = "demo_igw_eip"
@@ -133,13 +133,13 @@ resource "random_string" "random" {
   length = 10
 }
 
-# Terraform Data Block - To Lookup Latest Ubuntu 22.04 AMI Image
+# Terraform Data Block - To Lookup Latest Ubuntu 20.04 AMI Image
 data "aws_ami" "ubuntu" {
   most_recent = true
 
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+    values = ["ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*"]
   }
 
   filter {
@@ -178,15 +178,50 @@ resource "aws_instance" "ubuntu_server" {
   }
 
   tags = {
-    Name  = "local.server_name"
-    Owner = local.team
-    App   = local.application
+    Name = "Ubuntu EC2 Server"
   }
 
   lifecycle {
     ignore_changes = [security_groups]
   }
 
+
+}
+# Terraform Resource Block - To Build Web Server in Public Subnet
+resource "aws_instance" "web_server" {
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = "t3.micro"
+  subnet_id                   = aws_subnet.public_subnets["public_subnet_1"].id
+  security_groups             = [aws_security_group.vpc-ping.id, 
+     aws_security_group.ingress-ssh.id, aws_security_group.vpc-web.id]
+  associate_public_ip_address = true
+  key_name                    = aws_key_pair.generated.key_name
+  connection {
+    user        = "ubuntu"
+    private_key = tls_private_key.generated.private_key_pem
+    host        = self.public_ip
+  }
+
+  # Leave the first part of the block unchanged and create our `local-exec` provisioner
+  provisioner "local-exec" {
+    command = "chmod 600 ${local_file.private_key_pem.filename}"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "sudo rm -rf /tmp",
+      "sudo git clone https://github.com/hashicorp/demo-terraform-101 /tmp",
+      "sudo sh /tmp/assets/setup-web.sh",
+    ]
+  }
+
+  tags = {
+    Name = "Web EC2 Server"
+  }
+
+  lifecycle {
+    ignore_changes = [security_groups]
+  }
 
 }
 
@@ -211,7 +246,20 @@ resource "aws_security_group" "vpc-ping" {
   }
 }
 
-# Terraform Resource Block - Security Group to Allow SSH Traffic
+resource "tls_private_key" "generated" {
+  algorithm = "RSA"
+}
+
+resource "local_file" "private_key_pem" {
+  content  = tls_private_key.generated.private_key_pem
+  filename = "MyAWSKey.pem"
+}
+
+resource "aws_key_pair" "generated" {
+  key_name   = "MyAWSKey"
+  public_key = tls_private_key.generated.public_key_openssh
+}
+
 resource "aws_security_group" "ingress-ssh" {
   name   = "allow-all-ssh"
   vpc_id = aws_vpc.vpc.id
@@ -223,7 +271,6 @@ resource "aws_security_group" "ingress-ssh" {
     to_port   = 22
     protocol  = "tcp"
   }
-
   // Terraform removes the default rule
   egress {
     from_port   = 0
@@ -244,6 +291,15 @@ resource "aws_security_group" "vpc-web" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  ingress {
+    description = "Allow Port 443"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     description = "Allow all ip and ports outbound"
     from_port   = 0
@@ -252,84 +308,3 @@ resource "aws_security_group" "vpc-web" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
-
-
-resource "tls_private_key" "generated" {
-  algorithm = "RSA"
-}
-
-resource "local_file" "private_key_pem" {
-  content  = tls_private_key.generated.private_key_pem
-  filename = "MyAWSKey.pem"
-}
-
-resource "aws_key_pair" "generated" {
-  key_name   = "MyAWSKey"
-  public_key = tls_private_key.generated.public_key_openssh
-
-  lifecycle {
-    ignore_changes = [key_name]
-  }
-}
-
-resource "aws_s3_bucket" "my-new-s3-bucket" {
-  bucket = "my-new-tf-test-bucket-${random_id.randomness.hex}"
-
-  tags = {
-    Name      = "My new S3 Bucket"
-    Terraform = "true"
-  }
-}
-
-resource "aws_s3_bucket_ownership_controls" "my_new_bucket_acl" {
-  bucket = aws_s3_bucket.my-new-s3-bucket.id
-
-  rule {
-    object_ownership = "BucketOwnerPreferred"
-  }
-}
-
-resource "aws_s3_bucket_acl" "my_new_bucket_acl" {
-  depends_on = [aws_s3_bucket_ownership_controls.my_new_bucket_acl]
-  bucket     = aws_s3_bucket.my-new-s3-bucket.id
-  acl        = "private"
-}
-
-resource "aws_security_group" "my-new-security_group" {
-  name        = "web_server_inbound"
-  description = "Allow inbound HTTP and HTTPS traffic"
-  vpc_id      = aws_vpc.vpc.id
-
-  ingress {
-    description = "HTTP from VPC"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name      = "web_server_inbound"
-    Purpose   = "Allow inbound HTTP and HTTPS traffic"
-    Terraform = "true"
-  }
-}
-
-resource "random_id" "randomness" {
-  byte_length = 16
-}
-
-
-resource "aws_subnet" "terraform-subnet" {
-  vpc_id                  = aws_vpc.vpc.id
-  cidr_block              = var.variables_sub_cidr
-  availability_zone       = var.variable_sub_az
-  map_public_ip_on_launch = var.variables_sub_auto_ip
-
-  tags = {
-    Name      = "sub-variables-$[var.variable_sub_az]"
-    Terraform = "true"
-  }
-
-}
-
