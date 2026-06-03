@@ -2,3 +2,5 @@
 terraform.tfstate*
 MyAWSKey.pem
 terraform_log.txt
+.stateserver
+.stateserver.py
