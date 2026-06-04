@@ -4,3 +4,6 @@ MyAWSKey.pem
 terraform_log.txt
 .stateserver
 .stateserver.py
+state_configuration
+state_data
+*state*
