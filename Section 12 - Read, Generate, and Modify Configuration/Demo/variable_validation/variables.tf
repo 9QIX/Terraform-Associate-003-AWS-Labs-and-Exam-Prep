@@ -1,5 +1,11 @@
 terraform {
-  backend "local" {}
+  cloud {
+    organization = "krypticash"
+
+    workspaces {
+      name = "variable_validation"
+    }
+  }
 }
 
 variable "cloud" {
@@ -75,7 +81,7 @@ output "cost_code" {
 }
 
 output "phone_number" {
-  value = local.contact_info.phone_number
+  value     = local.contact_info.phone_number
   sensitive = true
 }
 

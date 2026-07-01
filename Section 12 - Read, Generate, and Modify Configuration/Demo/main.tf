@@ -258,3 +258,17 @@ resource "aws_instance" "web_server" {
     ignore_changes = [security_groups]
   }
 }
+
+
+output "phone_number" {
+  value     = var.phone_number
+  sensitive = true
+}
+
+resource "aws_subnet" "list_subnet" {
+  for_each          = var.env
+  vpc_id            = aws_vpc.vpc.id
+  cidr_block        = each.value.ip
+  availability_zone = each.value.az
+}
+
