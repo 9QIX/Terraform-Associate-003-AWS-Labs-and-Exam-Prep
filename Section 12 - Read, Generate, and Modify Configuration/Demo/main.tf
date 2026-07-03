@@ -8,6 +8,29 @@ Contributors: Bryan and Gabe
 data "aws_availability_zones" "available" {}
 data "aws_region" "current" {}
 
+data "aws_s3_bucket" "data_bucket" {
+  bucket = "my-data-lookup-bucket-gar"
+}
+
+resource "aws_iam_policy" "policy" {
+  name        = "data_bucket_policy"
+  description = "Allow access to my bucket"
+  policy = jsonencode({
+    "Version" : "2012-10-17",
+    "Statement" : [
+      {
+        "Effect" : "Allow",
+        "Action" : [
+          "s3:Get*",
+          "s3:List*"
+        ],
+        "Resource" : "${data.aws_s3_bucket.data_bucket.arn}"
+      }
+    ]
+  })
+}
+
+
 locals {
   team        = "api_mgmt_dev"
   application = "corp_api"
@@ -23,23 +46,44 @@ locals {
 locals {
   # Common tags to be assigned to all resources
   common_tags = {
-    Name      = var.server_name
-    Owner     = local.team
-    App       = local.application
-    Service   = local.service_name
-    AppTeam   = local.app_team
-    CreatedBy = local.createdby
+    Name      = lower(local.server_name)
+    Owner     = lower(local.team)
+    App       = lower(local.application)
+    Service   = lower(local.service_name)
+    AppTeam   = lower(local.app_team)
+    CreatedBy = lower(local.createdby)
   }
 }
+
+locals {
+  maximum = max(var.num_1, var.num_2, var.num_3)
+  minimum = min(var.num_1, var.num_2, var.num_3, 44, 20)
+}
+
+locals {
+  ingress_rules = [
+    {
+      description = "Port 443"
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+  ]
+}
+
+
+
 #Define the VPC
 resource "aws_vpc" "vpc" {
   cidr_block = var.vpc_cidr
 
   tags = {
-    Name        = var.vpc_name
-    Environment = "demo_environment"
-    Terraform   = "true"
+    Name        = upper(var.vpc_name)
+    Environment = upper(var.environment)
+    Terraform   = upper("true")
   }
+  enable_dns_hostnames = true
 }
 
 #Random ID for unique resource naming
@@ -272,3 +316,85 @@ resource "aws_subnet" "list_subnet" {
   availability_zone = each.value.az
 }
 
+
+resource "aws_security_group" "main" {
+  name   = "core-sg-global"
+  vpc_id = aws_vpc.vpc.id
+
+
+  dynamic "ingress" {
+    for_each = var.web_ingress
+    content {
+      description = ingress.value.description
+      from_port   = ingress.value.port
+      to_port     = ingress.value.port
+      protocol    = ingress.value.protocol
+      cidr_blocks = ingress.value.cidr_blocks
+    }
+  }
+  lifecycle {
+    create_before_destroy = true
+    # prevent_destroy       = true
+  }
+}
+
+resource "tls_private_key" "generated" {
+  algorithm = "RSA"
+}
+
+resource "local_file" "private_key_pem" {
+  content  = tls_private_key.generated.private_key_pem
+  filename = "MyAWSKey.pem"
+}
+
+resource "aws_key_pair" "generated" {
+  key_name   = "MyAWSKey"
+  public_key = tls_private_key.generated.public_key_openssh
+}
+
+resource "aws_security_group" "vpc-ping" {
+  name        = "vpc-ping"
+  vpc_id      = aws_vpc.vpc.id
+  description = "ICMP for Ping Access"
+  ingress {
+    description = "Allow ICMP Traffic"
+    from_port   = -1
+    to_port     = -1
+    protocol    = "icmp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    description = "Allow all ip and ports outbound"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "ingress-ssh" {
+  name   = "allow-all-ssh"
+  vpc_id = aws_vpc.vpc.id
+  ingress {
+    cidr_blocks = ["0.0.0.0/0"]
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+module "server_subnet_1" {
+  source          = "./modules/web_server"
+  ami             = data.aws_ami.ubuntu.id
+  key_name        = aws_key_pair.generated.key_name
+  user            = "ubuntu"
+  private_key     = tls_private_key.generated.private_key_pem
+  subnet_id       = aws_subnet.public_subnets["public_subnet_1"].id
+  security_groups = [aws_security_group.vpc-ping.id, aws_security_group.ingress-ssh.id, aws_security_group.vpc-web.id, aws_security_group.main.id]
+}
